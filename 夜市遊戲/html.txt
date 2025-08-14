@@ -55,7 +55,18 @@
 
     <p class="hint">小提醒：允許麥克風、盡量在安靜環境；若偵測不穩，可改用「大聲 vs 小聲」策略。</p>
   </main>
+<!-- 🔵 相機畫面（只在熱狗關卡用） -->
+<video id="cam" width="320" height="240" playsinline autoplay muted class="hidden"></video>
 
+<div id="hotdogUI" class="stack">
+  <div class="meter"><div id="hotdogFill"></div></div>
+  <p>咀嚼次數目標：<span id="hotdogGoal">12</span></p>
+  <p>嘴型指標 MAR：<span id="marVal">0.00</span>
+    （開口門檻 <span id="marOpen">—</span>；閉口門檻 <span id="marClose">—</span>）
+  </p>
+  <p id="calibTip">請先「閉嘴」1 秒進行校準…</p>
+</div>
   <script src="main.js"></script>
 </body>
 </html>
+
