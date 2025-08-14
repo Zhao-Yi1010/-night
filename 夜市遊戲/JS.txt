@@ -1,6 +1,7 @@
-// ====== 基礎麥克風音量偵測 ======
+// ====== 共用 DOM ======
 let audioCtx, analyser, dataArray, micStream;
 let rafId = null;
+
 const volVal = document.getElementById('volVal');
 const volBar = document.getElementById('volBar');
 const stateText = document.getElementById('stateText');
@@ -23,35 +24,17 @@ const hotdogGoalEl = document.getElementById('hotdogGoal');
 const lollipopFill = document.getElementById('lollipopFill');
 const lollipopGoalEl = document.getElementById('lollipopGoal');
 
+const camEl = document.getElementById('cam');
+const marValEl = document.getElementById('marVal');
+const marOpenEl = document.getElementById('marOpen');
+const marCloseEl = document.getElementById('marClose');
+const calibTipEl = document.getElementById('calibTip');
+
 let game = null;
 let startTime = 0;
 let elapsed = 0;
 
-// 音量（RMS）計算
-function getVolume() {
-  analyser.getByteTimeDomainData(dataArray);
-  let sum = 0;
-  for (let i = 0; i < dataArray.length; i++) {
-    const v = (dataArray[i] - 128) / 128;
-    sum += v * v;
-  }
-  const rms = Math.sqrt(sum / dataArray.length); // 0~約0.5
-  return rms;
-}
-
-// 初始化麥克風
-async function initAudio() {
-  if (audioCtx) return;
-  micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  const source = audioCtx.createMediaStreamSource(micStream);
-  analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 1024;
-  dataArray = new Uint8Array(analyser.fftSize);
-  source.connect(analyser);
-}
-
-// ====== 共用 UI ======
+// ====== UI helpers ======
 function setState(t) { stateText.textContent = t; }
 function setProgress(v) { progressText.textContent = v; }
 function setTime(ms) {
@@ -67,7 +50,193 @@ function showResult(title, detail){
 }
 function hideResult(){ result.classList.add('hidden'); }
 
-// ====== 核心迴圈 ======
+// ====== 麥克風音量偵測（給 氣球 / 棒棒糖 用）======
+function getVolume() {
+  analyser.getByteTimeDomainData(dataArray);
+  let sum = 0;
+  for (let i = 0; i < dataArray.length; i++) {
+    const v = (dataArray[i] - 128) / 128;
+    sum += v * v;
+  }
+  const rms = Math.sqrt(sum / dataArray.length); // 0~約0.5
+  return rms;
+}
+
+async function initAudio() {
+  if (audioCtx) return;
+  micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const source = audioCtx.createMediaStreamSource(micStream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  dataArray = new Uint8Array(analyser.fftSize);
+  source.connect(analyser);
+}
+
+// ====== FaceMesh（給 熱狗 用）======
+let faceMeshInstance = null;
+let cameraInstance = null;
+
+function dist2D(a, b) {
+  const dx = a.x - b.x, dy = a.y - b.y;
+  return Math.hypot(dx, dy);
+}
+
+// 熱狗（相機）版：MAR = dist(13,14)/dist(78,308)
+function HotdogCamGame(target = 12) {
+  this.target = target;
+  this.count = 0;
+  this.awaitClose = false;
+
+  // 校準
+  this.calibrating = true;
+  this.samples = [];
+  this.base = 0;
+  this.OPEN_TH = 0;
+  this.CLOSE_TH = 0;
+  this.lastMouthTime = 0;
+
+  hotdogGoalEl.textContent = target;
+  hotdogFill.style.width = '0%';
+  calibTipEl.classList.remove('hidden');
+  setState('請先閉嘴校準…');
+
+  this.updateFromMAR = (mar, t) => {
+    marValEl.textContent = mar.toFixed(2);
+
+    // 先收閉嘴樣本 ~30 次
+    if (this.calibrating) {
+      this.samples.push(mar);
+      if (this.samples.length >= 30) {
+        const sorted = [...this.samples].sort((a,b)=>a-b);
+        this.base = sorted[Math.floor(sorted.length/2)] || 0.06;
+
+        // 動態門檻
+        this.CLOSE_TH = Math.min(this.base * 1.25, 0.12);
+        this.OPEN_TH  = Math.max(this.base * 2.0, 0.16);
+        if (this.OPEN_TH <= this.CLOSE_TH) this.OPEN_TH = this.CLOSE_TH + 0.05;
+
+        marOpenEl.textContent = this.OPEN_TH.toFixed(2);
+        marCloseEl.textContent = this.CLOSE_TH.toFixed(2);
+        this.calibrating = false;
+        calibTipEl.classList.add('hidden');
+        setState('開始咀嚼！');
+      } else {
+        return; // 校準中不計次
+      }
+    }
+
+    marOpenEl.textContent = this.OPEN_TH.toFixed(2);
+    marCloseEl.textContent = this.CLOSE_TH.toFixed(2);
+
+    // 張嘴
+    if (!this.awaitClose && mar > this.OPEN_TH) {
+      this.awaitClose = true;
+      setState('張口');
+      this.lastMouthTime = t;
+    }
+    // 閉嘴 → +1
+    if (this.awaitClose && mar < this.CLOSE_TH) {
+      this.awaitClose = false;
+      if (t - this.lastMouthTime > 120) {
+        this.count++;
+        setProgress(`${this.count}/${this.target}`);
+        hotdogFill.style.width = `${Math.min(100, this.count / this.target * 100)}%`;
+        setState('閉口');
+        if (this.count >= this.target) {
+          endGame(`熱狗切完！`, `你完成 ${this.count} 次咀嚼，用時 ${timeText.textContent}`);
+        }
+      }
+    }
+  };
+}
+
+async function startFaceMesh() {
+  return new Promise((resolve) => {
+    faceMeshInstance = new FaceMesh.FaceMesh({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+    });
+    faceMeshInstance.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: false,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+    faceMeshInstance.onResults((results) => {
+      if (!game || !(game instanceof HotdogCamGame)) return;
+      const t = performance.now();
+      if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+        setState('找不到臉，請對準鏡頭');
+        return;
+      }
+      const lm = results.multiFaceLandmarks[0];
+      const upper = lm[13], lower = lm[14], left = lm[78], right = lm[308];
+      const mar = dist2D(upper, lower) / (dist2D(left, right) + 1e-6);
+      game.updateFromMAR(mar, t);
+    });
+
+    cameraInstance = new Camera.Camera(camEl, {
+      onFrame: async () => { await faceMeshInstance.send({ image: camEl }); },
+      width: 320, height: 240
+    });
+    cameraInstance.start();
+    resolve();
+  });
+}
+
+function stopFaceMesh() {
+  try { cameraInstance && cameraInstance.stop(); } catch(e){}
+  cameraInstance = null;
+  faceMeshInstance = null;
+}
+
+// ====== 三種關卡（氣球／棒棒糖 用麥克風）======
+const THRESH_LOUD = 0.12; // 吹氣
+const THRESH_OPEN = 0.07; // 快速開口
+const HYST = 0.02;        // 回滯
+
+function BalloonGame(targetRadius=100) {
+  this.r = 20;
+  this.target = targetRadius;
+  this.update = (vol) => {
+    if (vol > THRESH_LOUD) { this.r += 1.5; setState('用力吹！'); }
+    else { this.r -= 0.6; setState('再大聲一點'); }
+    this.r = Math.max(10, Math.min(this.r, this.target + 10));
+    const pct = Math.min(100, (this.r / this.target) * 100);
+    setProgress(`${pct.toFixed(0)}%`);
+    drawBalloon(this.r);
+    if (this.r >= this.target) endGame(`氣球爆囉！`, `你把氣球吹到目標大小，用時 ${timeText.textContent}`);
+  };
+}
+
+function LollipopGame(target=20) {
+  this.target = target;
+  this.count = 0;
+  this.lastPeak = 0;
+  this.update = (vol, t) => {
+    if (vol > THRESH_OPEN && (t - this.lastPeak) > 180) {
+      this.lastPeak = t;
+      this.count++;
+      lollipopFill.style.width = `${Math.min(100, this.count / this.target * 100)}%`;
+      setProgress(`${this.count}/${this.target}`);
+      setState('舔！');
+      if (this.count >= this.target) endGame(`棒棒糖舔好！`, `你完成 ${this.count} 次，用時 ${timeText.textContent}`);
+    } else if (vol < (THRESH_OPEN - HYST)) {
+      setState('準備舔');
+    }
+  };
+}
+
+// 畫氣球
+function drawBalloon(r) {
+  bctx.clearRect(0,0,balloonCanvas.width, balloonCanvas.height);
+  const cx = balloonCanvas.width/2, cy = balloonCanvas.height/2 + 20;
+  bctx.beginPath(); bctx.arc(cx, cy, r, 0, Math.PI*2); bctx.fillStyle = '#f87171'; bctx.fill();
+  bctx.beginPath(); bctx.moveTo(cx, cy + r); bctx.lineTo(cx, cy + r + 60);
+  bctx.strokeStyle = '#555'; bctx.lineWidth = 2; bctx.stroke();
+}
+
+// ====== 主要迴圈 ======
 function loop() {
   const vol = getVolume();
   volVal.textContent = vol.toFixed(2);
@@ -80,138 +249,61 @@ function loop() {
   rafId = requestAnimationFrame(loop);
 }
 
-// ====== 三種關卡的最小邏輯 ======
-// 參考門檻（可依場地調整）
-const THRESH_LOUD = 0.12;      // 大聲（吹氣）
-const THRESH_OPEN = 0.07;      // 嘴巴張開（一般）
-const HYST = 0.02;             // 回滯避免抖動
-
-// 1) 熱狗：咀嚼次數（開合次數）
-function HotdogGame(target=12) {
-  this.target = target;
-  this.count = 0;
-  this.awaitClose = false; // true 表示剛開口，等閉口
-  hotdogGoalEl.textContent = target;
-
-  this.update = (vol) => {
-    // 開口：超過門檻，且原本不是開口狀態
-    if (!this.awaitClose && vol > THRESH_OPEN) {
-      this.awaitClose = true;
-      setState('張口');
-    }
-    // 閉口：低於 (THRESH_OPEN - HYST) 才算一次
-    if (this.awaitClose && vol < (THRESH_OPEN - HYST)) {
-      this.awaitClose = false;
-      this.count++;
-      setProgress(`${this.count}/${this.target}`);
-      hotdogFill.style.width = `${Math.min(100, this.count / this.target * 100)}%`;
-      setState('閉口');
-      if (this.count >= this.target) {
-        endGame(`熱狗切完！`, `你完成 ${this.count} 次咀嚼，用時 ${timeText.textContent}`);
-      }
-    }
-  };
-}
-
-// 2) 氣球：維持大聲吹氣讓半徑成長；沒吹就慢慢縮
-function BalloonGame(targetRadius=100) {
-  this.r = 20;
-  this.target = targetRadius;
-
-  this.update = (vol) => {
-    if (vol > THRESH_LOUD) {
-      this.r += 1.5; // 吹氣時成長
-      setState('用力吹！');
-    } else {
-      this.r -= 0.6; // 沒吹時緩慢縮
-      setState('再大聲一點');
-    }
-    this.r = Math.max(10, Math.min(this.r, this.target + 10));
-    const pct = Math.min(100, (this.r / this.target) * 100);
-    setProgress(`${pct.toFixed(0)}%`);
-    drawBalloon(this.r);
-    if (this.r >= this.target) {
-      endGame(`氣球爆囉！`, `你把氣球吹到目標大小，用時 ${timeText.textContent}`);
-    }
-  };
-}
-
-// 3) 棒棒糖：快速「小幅」開合視為一次舔（偵測節奏）
-// 玩法：短時間內達到 N 次快速開合
-function LollipopGame(target=20) {
-  this.target = target;
-  this.count = 0;
-  this.state = 'idle';
-  this.lastPeak = 0;
-
-  this.update = (vol, t) => {
-    // 快速開口峰值（>THRESH_OPEN），兩次峰之間要間隔 > 180ms 避免重複計數
-    if (vol > THRESH_OPEN && (t - this.lastPeak) > 180) {
-      this.lastPeak = t;
-      this.count++;
-      lollipopFill.style.width = `${Math.min(100, this.count / this.target * 100)}%`;
-      setProgress(`${this.count}/${this.target}`);
-      setState('舔！');
-      if (this.count >= this.target) {
-        endGame(`棒棒糖舔好！`, `你完成 ${this.count} 次，用時 ${timeText.textContent}`);
-      }
-    } else if (vol < (THRESH_OPEN - HYST)) {
-      setState('準備舔');
-    }
-  };
-}
-
-// 畫氣球
-function drawBalloon(r) {
-  bctx.clearRect(0,0,balloonCanvas.width, balloonCanvas.height);
-  const cx = balloonCanvas.width/2, cy = balloonCanvas.height/2 + 20;
-  // 球
-  bctx.beginPath();
-  bctx.arc(cx, cy, r, 0, Math.PI*2);
-  bctx.fillStyle = '#f87171';
-  bctx.fill();
-  // 繩子
-  bctx.beginPath();
-  bctx.moveTo(cx, cy + r);
-  bctx.lineTo(cx, cy + r + 60);
-  bctx.strokeStyle = '#555';
-  bctx.lineWidth = 2;
-  bctx.stroke();
+// 只有時間（相機模式用）
+function startTimeOnlyLoop() {
+  function tick() {
+    elapsed = performance.now() - startTime;
+    setTime(elapsed);
+    rafId = requestAnimationFrame(tick);
+  }
+  if (!rafId) rafId = requestAnimationFrame(tick);
 }
 
 // ====== 遊戲生命週期 ======
 async function startGame() {
   hideResult();
-  await initAudio();
   startTime = performance.now();
   setProgress(0);
-  setState('偵測中…');
+  setState('準備中…');
+  setTime(0);
 
-  // 顯示對應 UI
+  // 收起所有區塊
   document.getElementById('hotdogUI').classList.add('hidden');
   document.getElementById('lollipopUI').classList.add('hidden');
-  if (modeSel.value === 'balloon') {
-    // balloon canvas 顯示
+  balloonCanvas.classList.add('hidden');
+  camEl.classList.add('hidden');
+
+  // 停掉殘留
+  stopLoopKeepMic();
+  stopFaceMesh();
+
+  if (modeSel.value === 'hotdog') {
+    // 相機模式
+    camEl.classList.remove('hidden');
+    document.getElementById('hotdogUI').classList.remove('hidden');
+    volVal.textContent = '--'; volBar.style.width = '0%'; // 熱狗不用麥克風
+    game = new HotdogCamGame(12);
+    await startFaceMesh();
+    startTimeOnlyLoop();
+  } else if (modeSel.value === 'balloon') {
+    await initAudio();
     balloonCanvas.classList.remove('hidden');
     drawBalloon(20);
     game = new BalloonGame(100);
-  } else if (modeSel.value === 'hotdog') {
-    balloonCanvas.classList.add('hidden');
-    document.getElementById('hotdogUI').classList.remove('hidden');
-    game = new HotdogGame(12);
+    if (!rafId) rafId = requestAnimationFrame(loop);
   } else {
-    balloonCanvas.classList.add('hidden');
+    await initAudio();
     document.getElementById('lollipopUI').classList.remove('hidden');
     game = new LollipopGame(20);
+    if (!rafId) rafId = requestAnimationFrame(loop);
   }
-
-  if (!rafId) rafId = requestAnimationFrame(loop);
 }
 
 function endGame(title, detail){
   showResult(title, detail);
   setState('完成');
   stopLoopKeepMic();
+  stopFaceMesh(); // 相機也一起收
 }
 
 function stopLoopKeepMic(){
@@ -221,6 +313,7 @@ function stopLoopKeepMic(){
 
 function resetAll(){
   stopLoopKeepMic();
+  stopFaceMesh();
   setProgress(0);
   setTime(0);
   setState('待機');
@@ -229,6 +322,7 @@ function resetAll(){
   bctx.clearRect(0,0,balloonCanvas.width, balloonCanvas.height);
   hotdogFill.style.width = '0%';
   lollipopFill.style.width = '0%';
+  camEl.classList.add('hidden');
 }
 
 // 事件
@@ -236,7 +330,8 @@ startBtn.addEventListener('click', startGame);
 resetBtn.addEventListener('click', resetAll);
 againBtn.addEventListener('click', resetAll);
 
-// 離開頁面時關麥克風
+// 離開頁面時釋放
 window.addEventListener('beforeunload', () => {
-  if (micStream) micStream.getTracks().forEach(t => t.stop());
+  try { micStream && micStream.getTracks().forEach(t => t.stop()); } catch(e){}
+  stopFaceMesh();
 });
