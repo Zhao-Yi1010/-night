@@ -14,9 +14,9 @@
       <div class="row">
         <label>選擇關卡：</label>
         <select id="mode">
-          <option value="hotdog">嘴巴切熱狗（開合次數）</option>
-          <option value="balloon">吹氣球（連續吹氣）</option>
-          <option value="lollipop">舔棒棒糖（快速開合）</option>
+          <option value="hotdog">熱狗（相機：張嘴計次）</option>
+          <option value="balloon">吹氣球（麥克風）</option>
+          <option value="lollipop">舔棒棒糖（麥克風）</option>
         </select>
         <button id="startBtn">開始</button>
         <button id="resetBtn">重來</button>
@@ -35,13 +35,24 @@
     </section>
 
     <section id="playfield">
-      <!-- Balloon 圓、Hotdog & Lollipop 以進度條呈現 -->
-      <canvas id="balloon" width="320" height="240"></canvas>
-      <div id="hotdogUI" class="stack">
+      <!-- 🔵 熱狗關卡相機畫面 -->
+      <video id="cam" width="320" height="240" playsinline autoplay muted class="hidden"></video>
+
+      <!-- 🟠 氣球畫布（麥克風關卡用） -->
+      <canvas id="balloon" width="320" height="240" class="hidden"></canvas>
+
+      <!-- 🔵 熱狗（相機版）UI -->
+      <div id="hotdogUI" class="stack hidden">
         <div class="meter"><div id="hotdogFill"></div></div>
         <p>咀嚼次數目標：<span id="hotdogGoal">12</span></p>
+        <p>嘴型指標 MAR：<span id="marVal">0.00</span>
+          （開口門檻 <span id="marOpen">—</span>；閉口門檻 <span id="marClose">—</span>）
+        </p>
+        <p id="calibTip">請先「閉嘴」1 秒進行校準…</p>
       </div>
-      <div id="lollipopUI" class="stack">
+
+      <!-- 🟢 棒棒糖（麥克風）UI -->
+      <div id="lollipopUI" class="stack hidden">
         <div class="meter"><div id="lollipopFill"></div></div>
         <p>舔一舔（快速開合）目標：<span id="lollipopGoal">20</span></p>
       </div>
@@ -53,20 +64,14 @@
       <button id="againBtn">再玩一次</button>
     </section>
 
-    <p class="hint">小提醒：允許麥克風、盡量在安靜環境；若偵測不穩，可改用「大聲 vs 小聲」策略。</p>
+    <p class="hint">
+      小提醒：第一次使用請允許相機／麥克風；盡量在光線充足且安靜的環境。
+    </p>
   </main>
-<!-- 🔵 相機畫面（只在熱狗關卡用） -->
-<video id="cam" width="320" height="240" playsinline autoplay muted class="hidden"></video>
 
-<div id="hotdogUI" class="stack">
-  <div class="meter"><div id="hotdogFill"></div></div>
-  <p>咀嚼次數目標：<span id="hotdogGoal">12</span></p>
-  <p>嘴型指標 MAR：<span id="marVal">0.00</span>
-    （開口門檻 <span id="marOpen">—</span>；閉口門檻 <span id="marClose">—</span>）
-  </p>
-  <p id="calibTip">請先「閉嘴」1 秒進行校準…</p>
-</div>
+  <!-- MediaPipe FaceMesh + Camera Utils（必須在 main.js 之前載入） -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
   <script src="main.js"></script>
 </body>
 </html>
-
